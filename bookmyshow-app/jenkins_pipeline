@@ -1,0 +1,87 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKERHUB_USER = "nagrajyache"
+        APP_NAME = "bookmyshow-app"
+        TAG = "v${BUILD_NUMBER + 1}"
+        FULL_IMAGE = "nagrajyache/bookmyshow-app:${TAG}"
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main', url: 'https://github.com/nagrajyache/OnlineTicketPlatform-BMS.git'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh """
+                cd bookmyshow-app/
+                echo "Building Docker image..."
+                docker build -t ${FULL_IMAGE} .
+                """
+            }
+        }
+
+        stage('Docker Hub Login') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKERHUB_USER',
+                    passwordVariable: 'DOCKERHUB_PASS'
+                )]) {
+                    sh """
+                    echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin
+                    """
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                sh """
+                echo "Pushing image..."
+                docker push ${FULL_IMAGE}
+                """
+            }
+        }
+
+        stage('Deploy to devlopment Kubernetes (kubectl)') {
+            steps {
+                sh """
+                cd bookmyshow-app/
+                echo "Deploying to Kubernetes..."
+
+                cat deployment.yaml | sed 's|IMAGE_NAME|${FULL_IMAGE}|g' > deployment-temp.yaml
+                kubectl apply --validate=false -f deployment-temp.yaml
+                kubectl apply --validate=false -f service.yaml
+
+                kubectl rollout status deployment/${APP_NAME}
+                """
+            }
+        }
+
+        stage('Deploy via Ansible through k8 prod') {
+            steps {
+                sh """
+                echo "Running Ansible Playbook for Kubernetes Deployment..."
+
+                ansible-playbook -i hosts deployk8.yaml
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Pipeline SUCCESS - ${APP_NAME} deployed via kubectl + ansible!"
+        }
+
+        failure {
+            echo "❌ Pipeline FAILED - check logs"
+        }
+    }
+}
